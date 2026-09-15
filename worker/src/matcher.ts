@@ -120,8 +120,8 @@ export function rankMatches(
       if (best >= 0.99) break;
     }
 
-    if (best >= minScore && titles.some((title) => isExactIdentity(title, stream.title))) {
-      matches.push({ item: stream, score: best });
+    if (best >= minScore) {
+       matches.push({ item: stream, score: best });
     }
   }
 
