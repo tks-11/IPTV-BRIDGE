@@ -162,6 +162,7 @@ export default {
     try {
       return await handleRequest(request, env, ctx);
     } catch (err: any) {
+      console.error('WORKER CRASH:', err?.stack || err);
       return json({ error: 'Internal error', detail: err?.message }, { status: 500 });
     }
   }
