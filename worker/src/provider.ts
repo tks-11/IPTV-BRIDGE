@@ -114,24 +114,30 @@ export async function getTitleMatches(
   ctx: ExecutionContext
 ): Promise<ProviderItem[]> {
   const items = await getItems(config, kind, ctx);
-  const index = new Map<string, ProviderItem[]>();
+
+  const tokenIndex = new Map<string, ProviderItem[]>();
   for (const item of items) {
-    const key = titleIdentity(item.title);
-    if (!key) continue;
-    const list = index.get(key) || [];
-    list.push(item);
-    index.set(key, list);
+    const tokens = new Set(titleIdentity(item.title).split(' ').filter((t) => t.length > 2));
+    for (const tok of tokens) {
+      const list = tokenIndex.get(tok) || [];
+      list.push(item);
+      tokenIndex.set(tok, list);
+    }
   }
 
   const matches: ProviderItem[] = [];
   const seen = new Set<string>();
   for (const title of titles) {
-    for (const item of index.get(titleIdentity(title)) || []) {
-      const identity = String(item.streamId ?? item.url ?? item.id);
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      matches.push(item);
+    const tokens = titleIdentity(title).split(' ').filter((t) => t.length > 2);
+    for (const tok of tokens) {
+      for (const item of tokenIndex.get(tok) || []) {
+        const identity = String(item.streamId ?? item.url ?? item.id);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        matches.push(item);
+      }
     }
+    if (matches.length >= 300) break;
   }
   return matches;
 }
