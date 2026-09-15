@@ -1,5 +1,5 @@
 {
   "rewrites": [
-    { "source": "/:path*", "destination": "https://iptvbridge.joeishere.workers.dev/:path*" }
+    { "source": "/:path*", "destination": "iptv-bridge.tks11.workers.dev/:path*" }
   ]
 }
