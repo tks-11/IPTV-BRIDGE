@@ -284,10 +284,10 @@ async function resolveGlobalStreams(
   if (config.type === 'xtream' && season !== undefined && episode !== undefined) {
     const client = new XtreamClient(config.host!, config.username!, config.password!);
     const out: StremioStream[] = [];
-    for (const m of matches.slice(0, 3)) {
-      if (m.item.streamId === undefined) continue;
-      const eps = await client.getEpisodeStreams(m.item.streamId, season, episode);
-      for (const e of eps) {
+    for (const m of matches.slice(0, 5)) {
+        if (m.item.streamId === undefined) continue;
+        const eps = await client.getEpisodeStreams(m.item.streamId, season, episode);
+        for (const e of eps) {
         out.push({
           name: `IPTV${e.quality ? ' ' + e.quality : ''}`,
           title: `${m.item.title} \u2022 S${season}E${episode}`,
@@ -295,7 +295,6 @@ async function resolveGlobalStreams(
           quality: e.quality
         });
       }
-      if (out.length) break;
     }
     return out;
   }
