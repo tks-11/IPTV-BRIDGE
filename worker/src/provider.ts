@@ -106,6 +106,38 @@ export async function getGenres(config: UserConfig, kind: MediaKind, ctx: Execut
   return [];
 }
 
+/** Builds (and caches) the token -> items lookup used for fast title matching. */
+async function getTitleIndex(
+  config: UserConfig,
+  kind: Exclude<MediaKind, 'channel'>,
+  ctx: ExecutionContext
+): Promise<Map<string, ProviderItem[]>> {
+  const fp = configFingerprint(config);
+  const items = await getItems(config, kind, ctx);
+
+  const cachedEntries = await edgeCached(
+    ctx,
+    `title-index:${fp}:${kind}`,
+    TTL.STREAMS,
+    async () => {
+      const tokenIndex = new Map<string, ProviderItem[]>();
+      for (const item of items) {
+        const tokens = new Set(
+          titleIdentity(item.title).split(' ').filter((t) => t.length > 2)
+        );
+        for (const tok of tokens) {
+          const list = tokenIndex.get(tok) || [];
+          list.push(item);
+          tokenIndex.set(tok, list);
+        }
+      }
+      return [...tokenIndex.entries()];
+    }
+  );
+
+  return new Map(cachedEntries);
+}
+
 /** Exact-identity index lookup (fast path for global stream matching). */
 export async function getTitleMatches(
   config: UserConfig,
@@ -113,17 +145,7 @@ export async function getTitleMatches(
   titles: string[],
   ctx: ExecutionContext
 ): Promise<ProviderItem[]> {
-  const items = await getItems(config, kind, ctx);
-
-  const tokenIndex = new Map<string, ProviderItem[]>();
-  for (const item of items) {
-    const tokens = new Set(titleIdentity(item.title).split(' ').filter((t) => t.length > 2));
-    for (const tok of tokens) {
-      const list = tokenIndex.get(tok) || [];
-      list.push(item);
-      tokenIndex.set(tok, list);
-    }
-  }
+  const tokenIndex = await getTitleIndex(config, kind, ctx);
 
   const matches: ProviderItem[] = [];
   const seen = new Set<string>();
