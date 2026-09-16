@@ -12,6 +12,15 @@ function xtKind(kind: MediaKind): 'live' | 'movie' | 'series' {
   return kind === 'channel' ? 'live' : kind;
 }
 
+/** Precompute each item's search words once, so title-matching later never
+ * has to run regex/normalization again per request. */
+function attachTokens(items: ProviderItem[]): ProviderItem[] {
+  return items.map((item) => ({
+    ...item,
+    identityTokens: [...new Set(titleIdentity(item.title).split(' ').filter((t) => t.length > 2))]
+  }));
+}
+
 function buildXtreamItems(
   raw: RawStream[],
   kind: MediaKind,
@@ -62,12 +71,15 @@ export async function getItems(config: UserConfig, kind: MediaKind, ctx: Executi
         client.getStreams(xt)
       ]);
       const catMap = new Map(cats.map((c) => [c.category_id, c.category_name]));
-      return buildXtreamItems(raw, kind, catMap, client);
+      return attachTokens(buildXtreamItems(raw, kind, catMap, client));
     });
   }
 
   if (config.type === 'm3u' && config.m3uUrl) {
-    const parsed = await edgeCached(ctx, `m3u:parsed:${fp}`, TTL.PLAYLIST, () => parseM3UPlaylist(config.m3uUrl!));
+    const parsed = await edgeCached(ctx, `m3u:parsed:${fp}`, TTL.PLAYLIST, async () => {
+      const result = await parseM3UPlaylist(config.m3uUrl!);
+      return { ...result, items: attachTokens(result.items) };
+    });
     const selected = config.includedCategories?.length ? new Set(config.includedCategories.map(String)) : null;
     return parsed.items.filter(
       (item) =>
@@ -106,60 +118,29 @@ export async function getGenres(config: UserConfig, kind: MediaKind, ctx: Execut
   return [];
 }
 
-/** Builds (and caches) the token -> items lookup used for fast title matching. */
-async function getTitleIndex(
-  config: UserConfig,
-  kind: Exclude<MediaKind, 'channel'>,
-  ctx: ExecutionContext
-): Promise<Map<string, ProviderItem[]>> {
-  const fp = configFingerprint(config);
-  const items = await getItems(config, kind, ctx);
-
-  const cachedEntries = await edgeCached(
-    ctx,
-    `title-index:${fp}:${kind}`,
-    TTL.STREAMS,
-    async () => {
-      const tokenIndex = new Map<string, ProviderItem[]>();
-      for (const item of items) {
-        const tokens = new Set(
-          titleIdentity(item.title).split(' ').filter((t) => t.length > 2)
-        );
-        for (const tok of tokens) {
-          const list = tokenIndex.get(tok) || [];
-          list.push(item);
-          tokenIndex.set(tok, list);
-        }
-      }
-      return [...tokenIndex.entries()];
-    }
-  );
-
-  return new Map(cachedEntries);
-}
-
-/** Exact-identity index lookup (fast path for global stream matching). */
+/** Fast title matching using each item's precomputed search words — no
+ * regex or index-building happens here, just plain array/Set lookups. */
 export async function getTitleMatches(
   config: UserConfig,
   kind: Exclude<MediaKind, 'channel'>,
   titles: string[],
   ctx: ExecutionContext
 ): Promise<ProviderItem[]> {
-  const tokenIndex = await getTitleIndex(config, kind, ctx);
+  const items = await getItems(config, kind, ctx);
+
+  const queryTokenSets = titles.map(
+    (t) => new Set(titleIdentity(t).split(' ').filter((w) => w.length > 2))
+  );
 
   const matches: ProviderItem[] = [];
-  const seen = new Set<string>();
-  for (const title of titles) {
-    const tokens = titleIdentity(title).split(' ').filter((t) => t.length > 2);
-    for (const tok of tokens) {
-      for (const item of tokenIndex.get(tok) || []) {
-        const identity = String(item.streamId ?? item.url ?? item.id);
-        if (seen.has(identity)) continue;
-        seen.add(identity);
-        matches.push(item);
-      }
+  for (const item of items) {
+    const itemTokens = item.identityTokens || [];
+    if (!itemTokens.length) continue;
+    const isMatch = queryTokenSets.some((qs) => itemTokens.some((tok) => qs.has(tok)));
+    if (isMatch) {
+      matches.push(item);
+      if (matches.length >= 300) break;
     }
-    if (matches.length >= 300) break;
   }
   return matches;
 }
