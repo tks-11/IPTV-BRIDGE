@@ -41,6 +41,11 @@ export interface ProviderItem {
   season?: number;
   episode?: number;
   containerExtension?: string;
+  // Precomputed search words for this title (built once when the item is
+  // first loaded, cached alongside it). Lets title-matching skip re-running
+  // regex/normalization on every request, which is what was blowing the
+  // Cloudflare CPU time budget.
+  identityTokens?: string[];
 }
 
 export interface Genre {
