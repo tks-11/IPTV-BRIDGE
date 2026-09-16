@@ -15,10 +15,14 @@ function xtKind(kind: MediaKind): 'live' | 'movie' | 'series' {
 /** Precompute each item's search words once, so title-matching later never
  * has to run regex/normalization again per request. */
 function attachTokens(items: ProviderItem[]): ProviderItem[] {
-  return items.map((item) => ({
-    ...item,
-    identityTokens: [...new Set(titleIdentity(item.title).split(' ').filter((t) => t.length > 2))]
-  }));
+  for (const item of items) {
+    item.identityTokens = item.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .split(' ')
+      .filter((t) => t.length > 2);
+  }
+  return items;
 }
 
 function buildXtreamItems(
