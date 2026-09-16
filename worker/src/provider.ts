@@ -1,12 +1,21 @@
 // Unified, edge-cached provider layer (Xtream + M3U). Per-user: every cache key
 // is namespaced by the config fingerprint so users never see each other's data.
+//
+// Xtream catalogs are now built on Vercel (repo-root api/catalog.js) instead
+// of inline here: building the full item list + search tokens for a large
+// catalog was too slow for Cloudflare's free-tier 10ms CPU budget. Vercel has
+// a far bigger time budget, so it does the heavy lifting and this file just
+// fetches the finished JSON and caches it exactly like before.
 
 import { configFingerprint } from './config';
-import { cleanTitle, titleIdentity } from './cleaner';
+import { titleIdentity } from './cleaner';
 import { edgeCached, TTL } from './edgecache';
 import { parseM3UPlaylist } from './m3u';
-import { RawStream, XtreamClient } from './xtream';
+import { XtreamClient } from './xtream';
 import { Genre, MediaKind, ProviderItem, UserConfig } from './types';
+
+// Update this if your Vercel domain ever changes.
+const CATALOG_BUILDER_URL = 'https://iptv-bridge-five.vercel.app/api/catalog';
 
 function xtKind(kind: MediaKind): 'live' | 'movie' | 'series' {
   return kind === 'channel' ? 'live' : kind;
@@ -25,57 +34,20 @@ function attachTokens(items: ProviderItem[]): ProviderItem[] {
   return items;
 }
 
-function buildXtreamItems(
-  raw: RawStream[],
-  kind: MediaKind,
-  catMap: Map<string, string>,
-  client: XtreamClient
-): ProviderItem[] {
-  const xt = xtKind(kind);
-  const out: ProviderItem[] = [];
-  for (const s of raw) {
-    const streamId = s.stream_id ?? s.series_id;
-    if (streamId === undefined || streamId === null) continue;
-    const title = s.name || s.title || 'Untitled Stream';
-    const cleaned = cleanTitle(title);
-    const ext = s.container_extension || 'mp4';
-    const catId = String(s.category_id ?? '');
-    const rawYear = s.year ?? s.releaseDate ?? s.release_date;
-
-    let url = '';
-    if (xt === 'live') url = client.liveUrl(streamId);
-    else if (xt === 'movie') url = client.movieUrl(streamId, ext);
-
-    out.push({
-      id: `xt_${xt}_${streamId}`,
-      streamId,
-      title,
-      cleanTitle: cleaned.cleanTitle,
-      type: kind,
-      category: s.category_name || catMap.get(catId) || 'Uncategorized',
-      logo: (s.stream_icon || s.cover || s.movie_image) as string | undefined,
-      url,
-      year: cleaned.year || (rawYear ? parseInt(String(rawYear).substring(0, 4), 10) : undefined),
-      containerExtension: ext
-    });
-  }
-  return out;
-}
-
 /** All provider items for a media kind, cached per-user at the edge. */
 export async function getItems(config: UserConfig, kind: MediaKind, ctx: ExecutionContext): Promise<ProviderItem[]> {
   const fp = configFingerprint(config);
 
   if (config.type === 'xtream' && config.host && config.username && config.password) {
     return edgeCached(ctx, `xt:items:${fp}:${kind}`, TTL.STREAMS, async () => {
-      const client = new XtreamClient(config.host!, config.username!, config.password!);
-      const xt = xtKind(kind);
-      const [cats, raw] = await Promise.all([
-        client.getCategories(xt).catch(() => []),
-        client.getStreams(xt)
-      ]);
-      const catMap = new Map(cats.map((c) => [c.category_id, c.category_name]));
-      return attachTokens(buildXtreamItems(raw, kind, catMap, client));
+      const url =
+        `${CATALOG_BUILDER_URL}?kind=${encodeURIComponent(kind)}` +
+        `&host=${encodeURIComponent(config.host!)}` +
+        `&username=${encodeURIComponent(config.username!)}` +
+        `&password=${encodeURIComponent(config.password!)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Catalog builder failed: ${res.status}`);
+      return (await res.json()) as ProviderItem[];
     });
   }
 
