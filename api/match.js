@@ -76,12 +76,14 @@ function cleanTitle(rawTitle) {
   return { original: rawTitle, cleanTitle: cleaned || rawTitle, year };
 }
 
+const STOPWORDS = new Set(['the', 'and', 'of', 'for', 'with', 'from', 'this', 'that', 'part']);
+
 function tokensOf(title) {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .split(' ')
-    .filter((t) => t.length > 2);
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t));
 }
 
 function buildItems(raw, kind, catMap, host, username, password) {
