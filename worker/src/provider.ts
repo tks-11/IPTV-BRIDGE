@@ -1,11 +1,11 @@
 // Unified, edge-cached provider layer (Xtream + M3U). Per-user: every cache key
 // is namespaced by the config fingerprint so users never see each other's data.
 //
-// Xtream catalogs are now built on Vercel (repo-root api/catalog.js) instead
-// of inline here: building the full item list + search tokens for a large
-// catalog was too slow for Cloudflare's free-tier 10ms CPU budget. Vercel has
-// a far bigger time budget, so it does the heavy lifting and this file just
-// fetches the finished JSON and caches it exactly like before.
+// Xtream catalog building AND title-matching both happen on Vercel now
+// (repo-root api/catalog.js, api/match.js). Vercel returns only a small,
+// already-filtered result for stream lookups, so Cloudflare never has to
+// parse a giant multi-thousand-item JSON blob — that alone was blowing the
+// free-tier 10ms CPU budget even after the build itself was moved off Workers.
 
 import { configFingerprint } from './config';
 import { titleIdentity } from './cleaner';
@@ -15,7 +15,7 @@ import { XtreamClient } from './xtream';
 import { Genre, MediaKind, ProviderItem, UserConfig } from './types';
 
 // Update this if your Vercel domain ever changes.
-const CATALOG_BUILDER_URL = 'https://iptv-bridge-five.vercel.app/api/catalog';
+const VERCEL_BASE = 'https://iptv-bridge-five.vercel.app/api';
 
 function xtKind(kind: MediaKind): 'live' | 'movie' | 'series' {
   return kind === 'channel' ? 'live' : kind;
@@ -34,14 +34,15 @@ function attachTokens(items: ProviderItem[]): ProviderItem[] {
   return items;
 }
 
-/** All provider items for a media kind, cached per-user at the edge. */
+/** All provider items for a media kind, cached per-user at the edge. Used for
+ * catalog browsing and genre lists — NOT for stream-title matching anymore. */
 export async function getItems(config: UserConfig, kind: MediaKind, ctx: ExecutionContext): Promise<ProviderItem[]> {
   const fp = configFingerprint(config);
 
   if (config.type === 'xtream' && config.host && config.username && config.password) {
     return edgeCached(ctx, `xt:items:${fp}:${kind}`, TTL.STREAMS, async () => {
       const url =
-        `${CATALOG_BUILDER_URL}?kind=${encodeURIComponent(kind)}` +
+        `${VERCEL_BASE}/catalog?kind=${encodeURIComponent(kind)}` +
         `&host=${encodeURIComponent(config.host!)}` +
         `&username=${encodeURIComponent(config.username!)}` +
         `&password=${encodeURIComponent(config.password!)}`;
@@ -94,19 +95,34 @@ export async function getGenres(config: UserConfig, kind: MediaKind, ctx: Execut
   return [];
 }
 
-/** Fast title matching using each item's precomputed search words — no
- * regex or index-building happens here, just plain array/Set lookups. */
+/** Title matching for stream resolution. For Xtream, this now asks Vercel to
+ * both build the catalog and do the matching in one step, returning only the
+ * small matched subset — Cloudflare never touches the full catalog. */
 export async function getTitleMatches(
   config: UserConfig,
   kind: Exclude<MediaKind, 'channel'>,
   titles: string[],
   ctx: ExecutionContext
 ): Promise<ProviderItem[]> {
-  const items = await getItems(config, kind, ctx);
+  if (config.type === 'xtream' && config.host && config.username && config.password) {
+    const fp = configFingerprint(config);
+    const titleKey = titles.join('|').toLowerCase();
+    return edgeCached(ctx, `xt:match:${fp}:${kind}:${titleKey}`, TTL.EPISODES, async () => {
+      const url =
+        `${VERCEL_BASE}/match?kind=${encodeURIComponent(kind)}` +
+        `&host=${encodeURIComponent(config.host!)}` +
+        `&username=${encodeURIComponent(config.username!)}` +
+        `&password=${encodeURIComponent(config.password!)}` +
+        `&titles=${encodeURIComponent(titles.join(','))}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Match builder failed: ${res.status}`);
+      return (await res.json()) as ProviderItem[];
+    });
+  }
 
-  const queryTokenSets = titles.map(
-    (t) => new Set(titleIdentity(t).split(' ').filter((w) => w.length > 2))
-  );
+  // M3U catalogs are already small/local, so keep the direct in-Worker scan.
+  const items = await getItems(config, kind, ctx);
+  const queryTokenSets = titles.map((t) => new Set(titleIdentity(t).split(' ').filter((w) => w.length > 2)));
 
   const matches: ProviderItem[] = [];
   for (const item of items) {
